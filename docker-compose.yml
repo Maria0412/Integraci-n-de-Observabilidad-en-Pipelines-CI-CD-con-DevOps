@@ -22,7 +22,7 @@ services:
         max_attempts: 3
 
   app:
-    image: ghcr.io/maria0412/evaluacion_2/tickets-app:${IMAGE_TAG:-latest}
+    image: ghcr.io/maria0412/tickets-app:${IMAGE_TAG:-latest}
     ports:
       - "8081:8081"
     environment:

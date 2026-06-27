@@ -87,8 +87,8 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/maria0412/evaluacion_2/tickets-app:latest
-            ghcr.io/maria0412/evaluacion_2/tickets-app:${{ github.sha }}
+            ghcr.io/maria0412/tickets-app:latest
+            ghcr.io/maria0412/tickets-app:${{ github.sha }}
 
   deploy:
     name: Deploy with Docker Compose
