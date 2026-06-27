@@ -44,8 +44,7 @@ jobs:
             -Dtest=CreateTicketUseCaseTest,GetTicketUseCaseTest,TicketTest,TicketControllerTest \
             -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }} \
             -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }} \
-            -Dsonar.host.url=https://sonarcloud.io \
-            -Dsonar.token=${{ secrets.SONAR_TOKEN }}
+            -Dsonar.host.url=https://sonarcloud.io
 
       - name: Subir reporte Jacoco
         uses: actions/upload-artifact@v4
