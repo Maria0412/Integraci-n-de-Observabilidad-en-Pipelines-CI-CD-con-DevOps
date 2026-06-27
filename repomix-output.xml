@@ -83,6 +83,146 @@ This section contains the contents of the repository's files.
 *.cmd text eol=crlf
 </file>
 
+<file path=".github/dependabot.yml">
+version: 2
+updates:
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+</file>
+
+<file path=".github/workflows/ci.yml">
+name: CI/CD Pipeline - Tickets App
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  sonar:
+    name: Tests & SonarCloud Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Dar permisos al wrapper
+        run: chmod +x mvnw
+
+      - name: Ejecutar pruebas unitarias
+        run: ./mvnw test -Dtest=CreateTicketUseCaseTest,GetTicketUseCaseTest,TicketTest,TicketControllerTest
+
+      - name: Publicar reportes de test
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-pruebas-unitarias
+          path: target/surefire-reports/
+          retention-days: 5
+
+      - name: Análisis SonarCloud
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          ./mvnw verify sonar:sonar \
+            -Dtest=CreateTicketUseCaseTest,GetTicketUseCaseTest,TicketTest,TicketControllerTest \
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }} \
+            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }} \
+            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.token=${{ secrets.SONAR_TOKEN }}
+
+      - name: Subir reporte Jacoco
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report-${{ github.sha }}
+          path: target/site/jacoco/
+
+      - name: Compilar proyecto
+        run: ./mvnw clean package -DskipTests
+
+      - name: Subir artefacto JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: tickets-app-${{ github.sha }}
+          path: target/*.jar
+
+  build-image:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: sonar
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Login a GitHub Packages
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build y Push imagen Docker
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/maria0412/evaluacion_2/tickets-app:latest
+            ghcr.io/maria0412/evaluacion_2/tickets-app:${{ github.sha }}
+
+  deploy:
+    name: Deploy with Docker Compose
+    runs-on: ubuntu-latest
+    needs: build-image
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      - name: Login a GitHub Packages
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy via Docker Compose
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Desplegando versión: ${{ github.sha }}"
+          docker compose up -d
+
+      - name: Verificar contenedores activos
+        run: docker ps
+</file>
+
 <file path=".gitignore">
 HELP.md
 target/
@@ -123,6 +263,54 @@ build/
 wrapperVersion=3.3.4
 distributionType=only-script
 distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.12/apache-maven-3.9.12-bin.zip
+</file>
+
+<file path="docker-compose.yml">
+services:
+  tickets_db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tickets_db
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres} -d tickets_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+
+  app:
+    image: ghcr.io/maria0412/evaluacion_2/tickets-app:${IMAGE_TAG:-latest}
+    ports:
+      - "8081:8081"
+    environment:
+      DB_URL: jdbc:postgresql://tickets_db:5432/tickets_db
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD}
+    depends_on:
+      tickets_db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+
+volumes:
+  postgres_data:
 </file>
 
 <file path="Dockerfile">
@@ -655,8 +843,7 @@ Write-Output "MVN_CMD=$MAVEN_HOME/bin/$MVN_CMD"
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
- https://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 
     <modelVersion>4.0.0</modelVersion>
 
@@ -679,19 +866,25 @@ Write-Output "MVN_CMD=$MAVEN_HOME/bin/$MVN_CMD"
 
     <dependencies>
 
-        <!-- Spring Boot Web -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
-
-        <!-- Spring Data JPA -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
 
-        <!-- PostgreSQL Driver -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
@@ -699,7 +892,6 @@ Write-Output "MVN_CMD=$MAVEN_HOME/bin/$MVN_CMD"
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Testing -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -755,6 +947,10 @@ Write-Output "MVN_CMD=$MAVEN_HOME/bin/$MVN_CMD"
     </build>
 
 </project>
+</file>
+
+<file path="README.md">
+# Integraci-n-de-Observabilidad-en-Pipelines-CI-CD-con-DevOps
 </file>
 
 <file path="src/main/java/com/tickets/application/usecase/CreateTicketUseCase.java">
@@ -1411,299 +1607,6 @@ class TicketsApplicationTests {
 	}
 
 }
-</file>
-
-<file path=".github/dependabot.yml">
-version: 2
-updates:
-  - package-ecosystem: "maven"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-</file>
-
-<file path="docker-compose.yml">
-services:
-  tickets_db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: tickets_db
-      POSTGRES_USER: ${DB_USERNAME:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres} -d tickets_db"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: '0.50'
-          memory: 512M
-      restart_policy:
-        condition: on-failure
-        max_attempts: 3
-
-  app:
-    image: ghcr.io/maria0412/evaluacion_2/tickets-app:${IMAGE_TAG:-latest}
-    ports:
-      - "8081:8081"
-    environment:
-      DB_URL: jdbc:postgresql://tickets_db:5432/tickets_db
-      DB_USERNAME: ${DB_USERNAME:-postgres}
-      DB_PASSWORD: ${DB_PASSWORD}
-    depends_on:
-      tickets_db:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: '0.50'
-          memory: 512M
-      restart_policy:
-        condition: on-failure
-        max_attempts: 3
-
-volumes:
-  postgres_data:
-</file>
-
-<file path="README.md">
-# 🎟️ Microservicio de Tickets - CI/CD con DevOps
-
-Este proyecto corresponde a un microservicio desarrollado en **Java 17** y **Spring Boot**, implementando principios de Arquitectura Hexagonal junto con prácticas modernas de **DevOps**, automatización y contenerización.
-
-El objetivo principal es automatizar completamente el ciclo de vida de la aplicación utilizando **GitHub Actions**, **Docker**, **SonarCloud** y **Docker Compose**.
-
----
-
-# 🚀 Tecnologías Utilizadas
-
-* Java 17
-* Spring Boot
-* Maven
-* Docker
-* Docker Compose
-* GitHub Actions
-* SonarCloud
-* PostgreSQL
-* GitHub Container Registry (GHCR)
-
----
-
-# ⚙️ Pipeline CI/CD
-
-El pipeline se ejecuta automáticamente al realizar cambios en la rama principal (`main`) y cuenta con tres etapas principales:
-
-## 🧪 1. Pruebas y Calidad de Código
-
-En esta etapa se ejecutan:
-
-* Pruebas unitarias automatizadas
-* Validación del proyecto con Maven
-* Análisis estáico de código usando SonarCloud
-* Verificación del Quality Gate
-
-Si alguna prueba falla o el análisis de calidad no cumple los requisitos mínimos, el pipeline se detiene automáticamente.
-
----
-
-## 🐳 2. Construcción de Imagen Docker
-
-La aplicación se empaqueta utilizando Docker mediante una estrategia de **multi-stage build**, permitiendo:
-
-* Reducir el tamaño final de la imagen
-* Mejorar la seguridad
-* Optimizar el despliegue
-
-La imagen generada se publica automáticamente en:
-
-```bash
-ghcr.io/maria0412/evaluacion_2/tickets-app
-```
-
----
-
-## 📦 3. Despliegue Automatizado
-
-Con Docker Compose se levanta un entorno completo compuesto por:
-
-* `tickets_app`
-* `tickets_db` (PostgreSQL)
-
-El sistema incorpora:
-
-* Restart Policy
-* Límites de memoria y CPU
-* Healthchecks
-* Variables de entorno seguras mediante GitHub Secrets
-
----
-
-# 🔍 Trazabilidad
-
-Cada despliegue utiliza el identificador único del commit (`github.sha`), permitiendo rastrear exactamente qué versión del código fue desplegada.
-
----
-
-# ▶️ Ejecución Local
-
-Para levantar el proyecto localmente:
-
-```bash
-docker compose up -d --build
-```
-
-Verificar contenedores activos:
-
-```bash
-docker ps
-```
-
-Ver consumo de recursos:
-
-```bash
-docker stats
-```
-
----
-
-# 📌 Reflexión
-
-Este proyecto permitió comprender la importancia de DevOps y la automatización dentro del desarrollo moderno de software. Se aprendió cómo integrar pruebas, análisis de calidad, contenerización y despliegue continuo en un mismo flujo automatizado, mejorando la estabilidad, seguridad y trazabilidad de la aplicación.
-</file>
-
-<file path=".github/workflows/ci.yml">
-name: CI/CD Pipeline - Tickets App
-
-on:
-  push:
-    branches: [ "main", "develop" ]
-  pull_request:
-    branches: [ "main" ]
-
-jobs:
-  sonar:
-    name: Tests & SonarCloud Analysis
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout del código
-        uses: actions/checkout@v4
-
-      - name: Configurar JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: maven
-
-      - name: Dar permisos al wrapper
-        run: chmod +x mvnw
-
-      - name: Ejecutar pruebas unitarias
-        run: ./mvnw test -Dtest=CreateTicketUseCaseTest,GetTicketUseCaseTest,TicketTest,TicketControllerTest
-
-      - name: Publicar reportes de test
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: reporte-pruebas-unitarias
-          path: target/surefire-reports/
-          retention-days: 5
-
-      - name: Análisis SonarCloud
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          ./mvnw verify sonar:sonar \
-            -Dtest=CreateTicketUseCaseTest,GetTicketUseCaseTest,TicketTest,TicketControllerTest \
-            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }} \
-            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }} \
-            -Dsonar.host.url=https://sonarcloud.io \
-            -Dsonar.token=${{ secrets.SONAR_TOKEN }}
-
-      - name: Subir reporte Jacoco
-        uses: actions/upload-artifact@v4
-        with:
-          name: jacoco-report-${{ github.sha }}
-          path: target/site/jacoco/
-
-      - name: Compilar proyecto
-        run: ./mvnw clean package -DskipTests
-
-      - name: Subir artefacto JAR
-        uses: actions/upload-artifact@v4
-        with:
-          name: tickets-app-${{ github.sha }}
-          path: target/*.jar
-
-  build-image:
-    name: Build & Push Docker Image
-    runs-on: ubuntu-latest
-    needs: sonar
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout del código
-        uses: actions/checkout@v4
-
-      - name: Login a GitHub Packages
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build y Push imagen Docker
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: |
-            ghcr.io/maria0412/evaluacion_2/tickets-app:latest
-            ghcr.io/maria0412/evaluacion_2/tickets-app:${{ github.sha }}
-
-  deploy:
-    name: Deploy with Docker Compose
-    runs-on: ubuntu-latest
-    needs: build-image
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout del código
-        uses: actions/checkout@v4
-
-      - name: Login a GitHub Packages
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Deploy via Docker Compose
-        env:
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          echo "Desplegando versión: ${{ github.sha }}"
-          docker compose up -d
-
-      - name: Verificar contenedores activos
-        run: docker ps
 </file>
 
 </files>
